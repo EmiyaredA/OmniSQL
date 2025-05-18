@@ -1,5 +1,11 @@
 data/
+ckpts/
 *.whl
+*.log
+*.zip
 
 __pycache__/
 **/__pycache__/
+
+# .gitignore 中添加：
+events.out.tfevents.*

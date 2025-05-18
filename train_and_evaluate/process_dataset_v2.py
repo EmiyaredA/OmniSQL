@@ -10,17 +10,24 @@ from pyserini.search.lucene import LuceneSearcher
 from nltk.tokenize import word_tokenize
 from nltk import ngrams
 import ijson
+import gc
 
 SQL_RESERVED_WORDS = {'IDENTIFIED', 'FOREIGN', 'CONSTRAINT', 'USER', 'POSITION', 'DESCRIBE', 'CHECK', 'RECURSIVE', 'REAL', 'CONTINUE', 'GLOBAL', 'RLIKE', 'INSENSITIVE', 'BOOLEAN', 'CHAR', 'ROLE', 'CASE', 'SCHEMA', 'CLOB', 'RESIGNAL', 'ROW', 'DEC', 'TOP', 'EXCEPT', 'SENSITIVE', 'OUT', 'RENAME', 'READS', 'BLOB', 'INT', 'EXTERNAL', 'LOCALTIMESTAMP', 'DECLARE', 'DO', 'AS', 'OVER', 'CONDITION', 'SELECT', 'SAVEPOINT', 'WITHIN', 'ELSEIF', 'UNLOCK', 'DATABASE', 'TRIGGER', 'ACCESS', 'FALSE', 'BREAK', 'ITERATE', 'SMALLINT', 'ASC', 'YEAR', 'DELETE', 'ROLLBACK', 'ON', 'ESCAPE', 'CREATE', 'MONTH', 'SPECIFIC', 'SESSION', 'SQLSTATE', 'HOLD', 'SET', 'EXPLAIN', 'RETURN', 'ROWNUM', 'BINARY', 'SYSDATE', 'SQLWARNING', 'EXTEND', 'CAST', 'FOR', 'TERMINATED', 'VIEW', 'TRAILING', 'HOUR', 'VARYING', 'RESTRICT', 'RIGHT', 'DISTINCT', 'JOIN', 'UNKNOWN', 'VALUES', 'TABLE', 'OR', 'DOUBLE', 'DROP', 'COMMIT', 'PRECISION', 'LANGUAGE', 'START', 'INTERSECT', 'IGNORE', 'NULL', 'CURRENT_DATE', 'LOCK', 'INTO', 'NEW', 'DESC', 'STATIC', 'MODIFIES', 'GRANT', 'VALUE', 'LIMIT', 'MODULE', 'DATE', 'LOCALTIME', 'PERCENT', 'REPEAT', 'FULL', 'USAGE', 'ORDER', 'WHEN', 'PRIMARY', 'BETWEEN', 'CURSOR', 'DECIMAL', 'HAVING', 'IF', 'FILTER', 'INDEX', 'ILIKE', 'VARCHAR', 'EXEC', 'USING', 'ROWS', 'PLACING', 'WHILE', 'EXECUTE', 'EACH', 'LEFT', 'FLOAT', 'COLLATE', 'CURRENT_TIME', 'OPEN', 'RANGE', 'CROSS', 'FUNCTION', 'TIME', 'BOTH', 'NOT', 'CONVERT', 'NCHAR', 'KEY', 'DEFAULT', 'LIKE', 'ANALYZE', 'EXISTS', 'IN', 'BIT', 'INOUT', 'SUM', 'NUMERIC', 'AFTER', 'LEAVE', 'INSERT', 'TO', 'COUNT', 'THEN', 'BEFORE', 'OUTER', 'COLUMN', 'ONLY', 'END', 'PROCEDURE', 'OFFSET', 'ADD', 'INNER', 'RELEASE', 'FROM', 'DAY', 'NO', 'CALL', 'BY', 'LOCAL', 'ZONE', 'TRUE', 'EXIT', 'LEADING', 'INTEGER', 'MERGE', 'OLD', 'AVG', 'MIN', 'SQL', 'LOOP', 'SIGNAL', 'REFERENCES', 'MINUTE', 'UNIQUE', 'GENERATED', 'ALL', 'MATCH', 'CASCADE', 'UNION', 'COMMENT', 'FETCH', 'UNDO', 'UPDATE', 'WHERE', 'ELSE', 'PARTITION', 'BIGINT', 'CHARACTER', 'CURRENT_TIMESTAMP', 'ALTER', 'INTERVAL', 'REVOKE', 'CONNECT', 'WITH', 'TIMESTAMP', 'GROUP', 'BEGIN', 'CURRENT', 'REGEXP', 'NATURAL', 'SOME', 'SQLEXCEPTION', 'MAX', 'SUBSTRING', 'OF', 'AND', 'REPLACE', 'IS'}
 SPECIAL_CHARS_PATTERN = re.compile(r'[^a-zA-Z0-9_]')
 
-def load_json_file(file):
-    dataset = []
+# def load_json_file(file):
+#     dataset = []
+#     with open(file, 'r', encoding='utf-8') as f:
+#         objects = ijson.items(f, 'item')
+#         for obj in tqdm(objects):
+#             dataset.append(obj)
+#     return dataset
+
+def stream_json_file(file):
     with open(file, 'r', encoding='utf-8') as f:
         objects = ijson.items(f, 'item')
-        for obj in tqdm(objects):
-            dataset.append(obj)
-    return dataset
+        for obj in objects:
+            yield obj
 
 def remove_sql_comments(sql):
     # Remove single-line comments
@@ -398,67 +405,52 @@ def process_data(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--input_data_file", type = str)
-    parser.add_argument("--output_data_file", type = str)
-    parser.add_argument("--db_path", type = str)
-    parser.add_argument("--tables", type = str)
-    parser.add_argument("--source", type = str)
-    parser.add_argument("--mode", type = str)
-    parser.add_argument("--value_limit_num", type = int)
-    parser.add_argument("--db_content_index_path", type = str)
+    parser.add_argument("--input_data_file", type=str)
+    parser.add_argument("--output_data_file", type=str)
+    parser.add_argument("--db_path", type=str)
+    parser.add_argument("--tables", type=str)
+    parser.add_argument("--source", type=str)
+    parser.add_argument("--mode", type=str)
+    parser.add_argument("--value_limit_num", type=int)
+    parser.add_argument("--db_content_index_path", type=str)
 
     opt = parser.parse_args()
     print(opt)
 
     random.seed(42)
     assert opt.mode in ["train", "dev", "test"]
-    dataset = load_json_file(opt.input_data_file)
 
+    # Step 1: Collect used db_ids
+    used_db_ids = set()
+    for data in stream_json_file(opt.input_data_file):
+        used_db_ids.add(data["db_id"])
+    used_db_ids = list(used_db_ids)
+
+    
     ek_key = "external_knowledge"
 
     if opt.source == "synthetic":
         output_key = "cot"
-    elif opt.source == "spider2.0":
+    elif opt.source in ["spider2.0", "spider_dk", "spider_realistic", "spider_syn", "ehrsql", "sciencebenchmark"] :
         output_key = "query"
-        for data in dataset:
-            data[output_key] = "" # spider2.0 does not provide gold sqls
     elif opt.source == "spider":
         if opt.mode == "train":
             output_key = "cot" # use our synthetic CoT during training
         else:
             output_key = "query"
-        for data in dataset:
-            data[ek_key] = "" # spider does not provide external knowledge
     elif opt.source == "bird":
         if opt.mode == "train":
             output_key = "cot" # use our synthetic CoT during training
         else:
             output_key = "SQL"
         ek_key = "evidence"
-    elif opt.source == "spider_dk":
-        output_key = "query"
-        for data in dataset:
-            data[ek_key] = "" # spider_dk does not provide external knowledge
-    elif opt.source == "spider_realistic":
-        output_key = "query"
-        for data in dataset:
-            data[ek_key] = "" # spider_realistic does not provide external knowledge
-    elif opt.source == "spider_syn":
-        output_key = "query"
-        for data in dataset:
-            data[ek_key] = "" # spider_syn does not provide external knowledge
-            data["question"] = data["SpiderSynQuestion"]
-    elif opt.source in ["ehrsql", "sciencebenchmark"]:
-        output_key = "query"
-        for data in dataset:
-            data[ek_key] = "" # ehrsql and sciencebenchmark does not provide external knowledge
     else:
         assert "argument `source` should be in [xxxx]."
     
-    used_db_ids = list(set([data["db_id"] for data in dataset]))
+    # Step 2: Load table schema and sampled db values
     db_id2sampled_db_values = dict()
     db_id2db_info = dict()
-    for db_info in tqdm(load_json_file(opt.tables)):
+    for db_info in tqdm(stream_json_file(opt.tables)):
         db_id = db_info["db_id"]
         if db_id not in used_db_ids:
             continue
@@ -467,66 +459,111 @@ if __name__ == "__main__":
         db_id2sampled_db_values[db_id] = sampled_db_values_dict
         db_id2db_info[db_id] = db_info
 
-    batch_size = 10000
-    sliced_datasets = [dataset[i: i+batch_size] for i in range(0, len(dataset), batch_size)]
-    print(len(dataset))
-    print([len(batch_dataset) for batch_dataset in sliced_datasets]) 
-    assert len(dataset) == sum([len(batch_dataset) for batch_dataset in sliced_datasets])
+    lucene_batch_size = 10000
+    # Step 3: Stream read + batch Lucene process + write output
+    with open(opt.output_data_file, "w", encoding="utf-8") as f_out:
+        f_out.write("[\n")
+        first = True
 
-    # new_dataset = []
-    # 不再维护 new_dataset 列表，直接流式写入
-    first_record = True
-    with open(opt.output_data_file, "w", encoding="utf-8") as f:
-        f.write('[\n')
-        for batch_idx, batch_dataset in enumerate(sliced_datasets):
-            print(f"Process: {batch_idx+1}/{len(sliced_datasets)}")
+        buffer = []
+        for data in tqdm(stream_json_file(opt.input_data_file)):
+            buffer.append(data)
+            if len(buffer) >= lucene_batch_size:
+                # 批处理一批 Lucene 检索
+                db_id2searcher = {
+                    db_id: LuceneSearcher(os.path.join(opt.db_content_index_path, db_id))
+                    for db_id in set([x["db_id"] for x in buffer])
+                } if opt.db_content_index_path else {}
 
-            if opt.db_content_index_path:
-                db_id2searcher = dict()
-                batch_db_ids = list(set([data["db_id"] for data in batch_dataset]))
-                # load db context index searchers
-                for db_id in batch_db_ids:
-                    db_id2searcher[db_id] = LuceneSearcher(os.path.join(opt.db_content_index_path, db_id))
+                db_id2queries = {}
+                for sample in tqdm(buffer):
+                    question = (sample.get(ek_key, "") + "\n" + sample["question"]).strip()
+                    queries = list(set(obtain_n_grams(question, 8) + [question]))
+                    db_id2queries.setdefault(sample["db_id"], set()).update(queries)
+
+                db_id2relevant_hits = {
+                    db_id: retrieve_relevant_hits(db_id2searcher[db_id], list(queries))
+                    for db_id, queries in db_id2queries.items()
+                } if opt.db_content_index_path else None
+
+                if opt.source in ["spider2.0", "spider", "spider_dk", "spider_realistic", "ehrsql", "sciencebenchmark"]:
+                    for sample in buffer:
+                        sample[output_key] = "" # spider2.0 does not provide gold sqls
+                elif opt.source == "spider_syn":
+                    for sample in buffer:
+                        sample[ek_key] = "" # spider_syn does not provide external knowledge
+                        sample["question"] = sample["SpiderSynQuestion"]
                 
-                db_id2queries = dict()
-                for data in tqdm(batch_dataset):
-                    if data[ek_key].strip() == "":
-                        question = data["question"]
-                    else:
-                        question = data[ek_key] + "\n" + data["question"]
+                for sample in buffer:
+                    db_id = sample["db_id"]
 
-                    queries = obtain_n_grams(question, 8) + [question]
-                    queries = list(set(queries))
-                    if data["db_id"] in db_id2queries:
-                        db_id2queries[data["db_id"]].extend(queries)
-                    else:
-                        db_id2queries[data["db_id"]] = queries
-                
-                # perform db content retrieval (in a large batch)
-                db_id2relevant_hits = dict()
-                for db_id in tqdm(batch_db_ids):
-                    db_id2relevant_hits[db_id] = retrieve_relevant_hits(db_id2searcher[db_id], db_id2queries[db_id])
-            else:
-                db_id2relevant_hits = None
+                    result = prepare_input_output_pairs(
+                        sample,
+                        ek_key,
+                        db_id2relevant_hits,
+                        db_id2sampled_db_values[db_id],
+                        db_id2db_info[db_id],
+                        opt.source,
+                        output_key,
+                        opt.mode
+                    )
 
+                    if not first:
+                        f_out.write(",\n")
+                    f_out.write(json.dumps(result, indent=2, ensure_ascii=False))
+                    first = False
+
+                buffer.clear()
+                del db_id2searcher, db_id2relevant_hits,
+                gc.collect()
+
+        # 处理剩余数据（buffer < batch size）
+        if buffer:
+            db_id2searcher = {
+                db_id: LuceneSearcher(os.path.join(opt.db_content_index_path, db_id))
+                for db_id in set([x["db_id"] for x in buffer])
+            } if opt.db_content_index_path else {}
+
+            db_id2queries = {}
+            for sample in buffer:
+                question = (sample.get(ek_key, "") + "\n" + sample["question"]).strip()
+                queries = list(set(obtain_n_grams(question, 8) + [question]))
+                db_id2queries.setdefault(sample["db_id"], set()).update(queries)
+
+            db_id2relevant_hits = {
+                db_id: retrieve_relevant_hits(db_id2searcher[db_id], list(queries))
+                for db_id, queries in db_id2queries.items()
+            } if opt.db_content_index_path else None
+
+            if opt.source in ["spider2.0", "spider", "spider_dk", "spider_realistic", "ehrsql", "sciencebenchmark"]:
+                for sample in buffer:
+                    sample[output_key] = "" # spider2.0 does not provide gold sqls
+            elif opt.source == "spider_syn":
+                for sample in buffer:
+                    sample[ek_key] = "" # spider_syn does not provide external knowledge
+                    sample["question"] = sample["SpiderSynQuestion"]
             
-            for data in tqdm(batch_dataset):
-                record = prepare_input_output_pairs(data, ek_key, db_id2relevant_hits,
-                                                    db_id2sampled_db_values[data["db_id"]],
-                                                    db_id2db_info[data["db_id"]],
-                                                    opt.source, output_key, opt.mode)
-                # 逐条写入
-                if not first_record:
-                    f.write(',\n')
-                # 去掉 indent=2，能进一步节省空间/时间；如需可保留
-                json.dump(record, f, ensure_ascii=False)
-                first_record = False
-                # new_dataset.append(
-                #     prepare_input_output_pairs(data, ek_key, db_id2relevant_hits, db_id2sampled_db_values[data["db_id"]], 
-                #         db_id2db_info[data["db_id"]], opt.source, output_key, opt.mode)
-                # )
-            del db_id2searcher, db_id2relevant_hits, 
+            for sample in buffer:
+                db_id = sample["db_id"]
 
-        f.write('\n]')
-    # with open(opt.output_data_file, "w", encoding = "utf-8") as f:
-    #     f.write(json.dumps(new_dataset, indent = 2, ensure_ascii = False))
+                result = prepare_input_output_pairs(
+                    sample,
+                    ek_key,
+                    db_id2relevant_hits,
+                    db_id2sampled_db_values[db_id],
+                    db_id2db_info[db_id],
+                    opt.source,
+                    output_key,
+                    opt.mode
+                )
+
+                if not first:
+                    f_out.write(",\n")
+                f_out.write(json.dumps(result, indent=2, ensure_ascii=False))
+                first = False
+
+            buffer.clear()
+            del db_id2searcher, db_id2relevant_hits, 
+            gc.collect()
+
+        f_out.write("\n]")

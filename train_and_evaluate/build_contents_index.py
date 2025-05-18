@@ -84,7 +84,7 @@ def build_content_index(db_file_path, index_path):
         f.write(json.dumps(all_column_contents, indent = 2, ensure_ascii = True))
 
     # Building a BM25 Index (Direct Java Implementation), see https://github.com/castorini/pyserini/blob/master/docs/usage-index.md
-    cmd = f'python -m pyserini.index.lucene --collection JsonCollection --input ./data/temp_db_index --index "{index_path}" --generator DefaultLuceneDocumentGenerator --threads 16 --storePositions --storeDocvectors --storeRaw'
+    cmd = f'/mnt/cache/tonghao/envs/omnisql_process_data/bin/python -m pyserini.index.lucene --collection JsonCollection --input ./data/temp_db_index --index "{index_path}" --generator DefaultLuceneDocumentGenerator --threads 16 --storePositions --storeDocvectors --storeRaw'
     
     d = os.system(cmd)
     print(d)

@@ -14,10 +14,21 @@ import ijson
 SQL_RESERVED_WORDS = {'IDENTIFIED', 'FOREIGN', 'CONSTRAINT', 'USER', 'POSITION', 'DESCRIBE', 'CHECK', 'RECURSIVE', 'REAL', 'CONTINUE', 'GLOBAL', 'RLIKE', 'INSENSITIVE', 'BOOLEAN', 'CHAR', 'ROLE', 'CASE', 'SCHEMA', 'CLOB', 'RESIGNAL', 'ROW', 'DEC', 'TOP', 'EXCEPT', 'SENSITIVE', 'OUT', 'RENAME', 'READS', 'BLOB', 'INT', 'EXTERNAL', 'LOCALTIMESTAMP', 'DECLARE', 'DO', 'AS', 'OVER', 'CONDITION', 'SELECT', 'SAVEPOINT', 'WITHIN', 'ELSEIF', 'UNLOCK', 'DATABASE', 'TRIGGER', 'ACCESS', 'FALSE', 'BREAK', 'ITERATE', 'SMALLINT', 'ASC', 'YEAR', 'DELETE', 'ROLLBACK', 'ON', 'ESCAPE', 'CREATE', 'MONTH', 'SPECIFIC', 'SESSION', 'SQLSTATE', 'HOLD', 'SET', 'EXPLAIN', 'RETURN', 'ROWNUM', 'BINARY', 'SYSDATE', 'SQLWARNING', 'EXTEND', 'CAST', 'FOR', 'TERMINATED', 'VIEW', 'TRAILING', 'HOUR', 'VARYING', 'RESTRICT', 'RIGHT', 'DISTINCT', 'JOIN', 'UNKNOWN', 'VALUES', 'TABLE', 'OR', 'DOUBLE', 'DROP', 'COMMIT', 'PRECISION', 'LANGUAGE', 'START', 'INTERSECT', 'IGNORE', 'NULL', 'CURRENT_DATE', 'LOCK', 'INTO', 'NEW', 'DESC', 'STATIC', 'MODIFIES', 'GRANT', 'VALUE', 'LIMIT', 'MODULE', 'DATE', 'LOCALTIME', 'PERCENT', 'REPEAT', 'FULL', 'USAGE', 'ORDER', 'WHEN', 'PRIMARY', 'BETWEEN', 'CURSOR', 'DECIMAL', 'HAVING', 'IF', 'FILTER', 'INDEX', 'ILIKE', 'VARCHAR', 'EXEC', 'USING', 'ROWS', 'PLACING', 'WHILE', 'EXECUTE', 'EACH', 'LEFT', 'FLOAT', 'COLLATE', 'CURRENT_TIME', 'OPEN', 'RANGE', 'CROSS', 'FUNCTION', 'TIME', 'BOTH', 'NOT', 'CONVERT', 'NCHAR', 'KEY', 'DEFAULT', 'LIKE', 'ANALYZE', 'EXISTS', 'IN', 'BIT', 'INOUT', 'SUM', 'NUMERIC', 'AFTER', 'LEAVE', 'INSERT', 'TO', 'COUNT', 'THEN', 'BEFORE', 'OUTER', 'COLUMN', 'ONLY', 'END', 'PROCEDURE', 'OFFSET', 'ADD', 'INNER', 'RELEASE', 'FROM', 'DAY', 'NO', 'CALL', 'BY', 'LOCAL', 'ZONE', 'TRUE', 'EXIT', 'LEADING', 'INTEGER', 'MERGE', 'OLD', 'AVG', 'MIN', 'SQL', 'LOOP', 'SIGNAL', 'REFERENCES', 'MINUTE', 'UNIQUE', 'GENERATED', 'ALL', 'MATCH', 'CASCADE', 'UNION', 'COMMENT', 'FETCH', 'UNDO', 'UPDATE', 'WHERE', 'ELSE', 'PARTITION', 'BIGINT', 'CHARACTER', 'CURRENT_TIMESTAMP', 'ALTER', 'INTERVAL', 'REVOKE', 'CONNECT', 'WITH', 'TIMESTAMP', 'GROUP', 'BEGIN', 'CURRENT', 'REGEXP', 'NATURAL', 'SOME', 'SQLEXCEPTION', 'MAX', 'SUBSTRING', 'OF', 'AND', 'REPLACE', 'IS'}
 SPECIAL_CHARS_PATTERN = re.compile(r'[^a-zA-Z0-9_]')
 
-def load_json_file(file):
+# def load_json_file(file):
+#     dataset = []
+#     with open(file, 'r', encoding='utf-8') as f:
+#         objects = ijson.items(f, 'item')
+#         for obj in tqdm(objects):
+#             dataset.append(obj)
+#     return dataset
+def load_json_file(file, start_index=0, end_index=None):
+    """
+    读取 JSON 数组；可指定开始索引 start_index 和结束索引 end_index（不含）。
+    """
     dataset = []
     with open(file, 'r', encoding='utf-8') as f:
         objects = ijson.items(f, 'item')
+        objects = islice(objects, start_index, end_index)
         for obj in tqdm(objects):
             dataset.append(obj)
     return dataset
@@ -406,13 +417,18 @@ if __name__ == "__main__":
     parser.add_argument("--mode", type = str)
     parser.add_argument("--value_limit_num", type = int)
     parser.add_argument("--db_content_index_path", type = str)
+    parser.add_argument("--start_index", type=int, default=0,
+                        help="（可选）从第几个条目开始读取，0 为第一条")
+    parser.add_argument("--end_index", type=int, default=None,
+                        help="（可选）读取到第几个条目（不含），默认读到末尾")
 
     opt = parser.parse_args()
     print(opt)
 
     random.seed(42)
     assert opt.mode in ["train", "dev", "test"]
-    dataset = load_json_file(opt.input_data_file)
+    # 使用 start_index 和 end_index 控制读取范围
+    dataset = load_json_file(opt.input_data_file, opt.start_index, opt.end_index)
 
     ek_key = "external_knowledge"
 
@@ -467,66 +483,50 @@ if __name__ == "__main__":
         db_id2sampled_db_values[db_id] = sampled_db_values_dict
         db_id2db_info[db_id] = db_info
 
-    batch_size = 10000
+    batch_size = 20000
     sliced_datasets = [dataset[i: i+batch_size] for i in range(0, len(dataset), batch_size)]
     print(len(dataset))
     print([len(batch_dataset) for batch_dataset in sliced_datasets]) 
     assert len(dataset) == sum([len(batch_dataset) for batch_dataset in sliced_datasets])
 
-    # new_dataset = []
-    # 不再维护 new_dataset 列表，直接流式写入
-    first_record = True
-    with open(opt.output_data_file, "w", encoding="utf-8") as f:
-        f.write('[\n')
-        for batch_idx, batch_dataset in enumerate(sliced_datasets):
-            print(f"Process: {batch_idx+1}/{len(sliced_datasets)}")
+    new_dataset = []
+    for batch_idx, batch_dataset in enumerate(sliced_datasets):
+        print(f"Process: {batch_idx+1}/{len(sliced_datasets)}")
 
-            if opt.db_content_index_path:
-                db_id2searcher = dict()
-                batch_db_ids = list(set([data["db_id"] for data in batch_dataset]))
-                # load db context index searchers
-                for db_id in batch_db_ids:
-                    db_id2searcher[db_id] = LuceneSearcher(os.path.join(opt.db_content_index_path, db_id))
-                
-                db_id2queries = dict()
-                for data in tqdm(batch_dataset):
-                    if data[ek_key].strip() == "":
-                        question = data["question"]
-                    else:
-                        question = data[ek_key] + "\n" + data["question"]
-
-                    queries = obtain_n_grams(question, 8) + [question]
-                    queries = list(set(queries))
-                    if data["db_id"] in db_id2queries:
-                        db_id2queries[data["db_id"]].extend(queries)
-                    else:
-                        db_id2queries[data["db_id"]] = queries
-                
-                # perform db content retrieval (in a large batch)
-                db_id2relevant_hits = dict()
-                for db_id in tqdm(batch_db_ids):
-                    db_id2relevant_hits[db_id] = retrieve_relevant_hits(db_id2searcher[db_id], db_id2queries[db_id])
-            else:
-                db_id2relevant_hits = None
-
+        if opt.db_content_index_path:
+            db_id2searcher = dict()
+            batch_db_ids = list(set([data["db_id"] for data in batch_dataset]))
+            # load db context index searchers
+            for db_id in batch_db_ids:
+                db_id2searcher[db_id] = LuceneSearcher(os.path.join(opt.db_content_index_path, db_id))
             
+            db_id2queries = dict()
             for data in tqdm(batch_dataset):
-                record = prepare_input_output_pairs(data, ek_key, db_id2relevant_hits,
-                                                    db_id2sampled_db_values[data["db_id"]],
-                                                    db_id2db_info[data["db_id"]],
-                                                    opt.source, output_key, opt.mode)
-                # 逐条写入
-                if not first_record:
-                    f.write(',\n')
-                # 去掉 indent=2，能进一步节省空间/时间；如需可保留
-                json.dump(record, f, ensure_ascii=False)
-                first_record = False
-                # new_dataset.append(
-                #     prepare_input_output_pairs(data, ek_key, db_id2relevant_hits, db_id2sampled_db_values[data["db_id"]], 
-                #         db_id2db_info[data["db_id"]], opt.source, output_key, opt.mode)
-                # )
-            del db_id2searcher, db_id2relevant_hits, 
+                if data[ek_key].strip() == "":
+                    question = data["question"]
+                else:
+                    question = data[ek_key] + "\n" + data["question"]
 
-        f.write('\n]')
-    # with open(opt.output_data_file, "w", encoding = "utf-8") as f:
-    #     f.write(json.dumps(new_dataset, indent = 2, ensure_ascii = False))
+                queries = obtain_n_grams(question, 8) + [question]
+                queries = list(set(queries))
+                if data["db_id"] in db_id2queries:
+                    db_id2queries[data["db_id"]].extend(queries)
+                else:
+                    db_id2queries[data["db_id"]] = queries
+            
+            # perform db content retrieval (in a large batch)
+            db_id2relevant_hits = dict()
+            for db_id in tqdm(batch_db_ids):
+                db_id2relevant_hits[db_id] = retrieve_relevant_hits(db_id2searcher[db_id], db_id2queries[db_id])
+        else:
+            db_id2relevant_hits = None
+
+        for data in tqdm(batch_dataset):
+            new_dataset.append(
+                prepare_input_output_pairs(data, ek_key, db_id2relevant_hits, db_id2sampled_db_values[data["db_id"]], 
+                    db_id2db_info[data["db_id"]], opt.source, output_key, opt.mode)
+            )
+        del db_id2searcher, db_id2relevant_hits, 
+
+    with open(opt.output_data_file, "w", encoding = "utf-8") as f:
+        f.write(json.dumps(new_dataset, indent = 2, ensure_ascii = False))

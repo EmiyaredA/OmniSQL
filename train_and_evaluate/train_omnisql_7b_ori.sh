@@ -2,7 +2,7 @@ set -e
 
 LR=2e-5
 EPOCHS=2
-CONFIG_FILE="./accelerate_config_7b.yaml"
+CONFIG_FILE="./accelerate_config_7b_ori.yaml"
 PER_DEVICE_TRAIN_BATCH_SIZE=1
 MODEL_PATH="Qwen/Qwen2.5-Coder-7B-Instruct"
 CKPT_NUM=10
